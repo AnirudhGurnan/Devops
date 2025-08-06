@@ -1,0 +1,17 @@
+# Common variables for all hosts
+ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+ansible_python_interpreter: /usr/bin/python3
+
+# MongoDB common settings
+mongodb_user: mongod
+mongodb_group: mongod
+mongodb_datadir: /var/lib/mongodb
+mongodb_logdir: /var/log/mongodb
+
+# Ports
+mongodb_config_port: 27019
+mongodb_shard_port: 27018
+mongodb_mongos_port: 27017
+
+# Replica set names
+mongodb_config_replica_set: configReplSet

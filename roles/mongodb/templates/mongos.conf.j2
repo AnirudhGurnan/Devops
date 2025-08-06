@@ -1,0 +1,29 @@
+# MongoDB Configuration File for Mongos Router
+# {{ ansible_managed }}
+
+systemLog:
+  destination: file
+  logAppend: true
+  path: {{ mongodb_logdir }}/mongos.log
+  logRotate: rename
+
+net:
+  port: {{ mongodb_mongos_port }}
+  bindIp: 0.0.0.0
+  maxIncomingConnections: 65536
+
+processManagement:
+  fork: true
+  pidFilePath: /var/run/mongodb/mongos.pid
+
+security:
+{% if mongodb_keyfile_content is defined %}
+  keyFile: /etc/mongodb/keyfile
+{% endif %}
+
+sharding:
+  configDB: {{ mongodb_config_replica_set }}/{% for host in groups['config_servers'] %}{{ host }}:{{ mongodb_config_port }}{% if not loop.last %},{% endif %}{% endfor %}
+
+# Set parameter for mongos
+setParameter:
+  enableLocalhostAuthBypass: false
