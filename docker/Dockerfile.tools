@@ -1,0 +1,66 @@
+# MongoDB Automation Tools Docker Image
+FROM ubuntu:22.04
+
+# Metadata
+LABEL maintainer="devops-team@company.com"
+LABEL description="MongoDB automation tools for CI/CD pipelines"
+LABEL version="1.0"
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV MONGODB_TOOLS_VERSION=100.9.0
+ENV MONGOSH_VERSION=2.1.1
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    gnupg \
+    jq \
+    bc \
+    netcat \
+    openssl \
+    python3 \
+    python3-pip \
+    awscli \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install MongoDB tools
+RUN wget -qO - https://www.mongodb.org/static/pgp/server-7.0.asc | apt-key add - \
+    && echo "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | tee /etc/apt/sources.list.d/mongodb-org-7.0.list \
+    && apt-get update \
+    && apt-get install -y mongodb-org-tools mongodb-mongosh \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+RUN pip3 install \
+    pymongo \
+    requests \
+    boto3 \
+    slack-sdk \
+    pyyaml
+
+# Create working directory
+WORKDIR /app
+
+# Copy automation scripts
+COPY mongodb-automation/ /app/mongodb-automation/
+COPY scripts/ /app/scripts/
+
+# Make scripts executable
+RUN find /app -name "*.sh" -type f -exec chmod +x {} \;
+
+# Create directories for logs and data
+RUN mkdir -p /var/log/mongodb /var/lib/mongodb /tmp/mongodb
+
+# Set default user
+RUN useradd -m -s /bin/bash mongodb-user
+USER mongodb-user
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD /app/mongodb-automation/monitoring/health-check.sh --help > /dev/null || exit 1
+
+# Default command
+CMD ["/bin/bash"]

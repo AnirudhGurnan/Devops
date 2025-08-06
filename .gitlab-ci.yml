@@ -1,0 +1,465 @@
+# GitLab CI/CD Pipeline for MongoDB Automation
+# Supports multiple deployment strategies: Atlas, On-premises, and Docker
+
+stages:
+  - validate
+  - security-scan
+  - test
+  - build
+  - deploy-dev
+  - test-integration
+  - deploy-staging
+  - deploy-production
+  - monitor
+  - backup
+
+variables:
+  # Global settings
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+  
+  # MongoDB versions
+  MONGODB_VERSION: "7.0"
+  
+  # Environment settings
+  DEV_ENVIRONMENT: "development"
+  STAGING_ENVIRONMENT: "staging"
+  PROD_ENVIRONMENT: "production"
+  
+  # Terraform settings
+  TF_ROOT: ${CI_PROJECT_DIR}/atlas
+  TF_ADDRESS: ${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_ENVIRONMENT_NAME}
+  
+  # Ansible settings
+  ANSIBLE_HOST_KEY_CHECKING: "False"
+  ANSIBLE_FORCE_COLOR: "true"
+
+# Include templates
+include:
+  - template: Security/SAST.gitlab-ci.yml
+  - template: Security/Secret-Detection.gitlab-ci.yml
+
+# Cache configuration
+cache:
+  key: ${CI_COMMIT_REF_SLUG}
+  paths:
+    - .terraform/
+    - .ansible/
+    - node_modules/
+    - venv/
+
+# Validation Stage
+validate-scripts:
+  stage: validate
+  image: koalaman/shellcheck-alpine:stable
+  script:
+    - find . -name "*.sh" -type f -exec shellcheck {} +
+  allow_failure: true
+  only:
+    changes:
+      - "**/*.sh"
+      - ".gitlab-ci.yml"
+
+validate-terraform:
+  stage: validate
+  image: hashicorp/terraform:1.6
+  before_script:
+    - cd $TF_ROOT
+    - terraform init -backend=false
+  script:
+    - terraform validate
+    - terraform fmt -check
+  only:
+    changes:
+      - "atlas/**/*"
+      - ".gitlab-ci.yml"
+
+validate-ansible:
+  stage: validate
+  image: quay.io/ansible/ansible-runner:latest
+  script:
+    - ansible-playbook --syntax-check mongodb-sharded-cluster.yml
+    - ansible-lint mongodb-sharded-cluster.yml || true
+  only:
+    changes:
+      - "*.yml"
+      - "roles/**/*"
+      - "vars/**/*"
+      - ".gitlab-ci.yml"
+
+# Security Scanning
+security-scan-secrets:
+  stage: security-scan
+  extends: .secret-analyzer
+  variables:
+    SECRET_DETECTION_EXCLUDED_PATHS: "*.example,*.md"
+
+security-scan-ansible:
+  stage: security-scan
+  image: quay.io/ansible/ansible-runner:latest
+  script:
+    - pip install ansible-lint
+    - ansible-lint --severity-threshold=medium .
+  allow_failure: true
+  only:
+    changes:
+      - "*.yml"
+      - "roles/**/*"
+
+# Testing Stage
+test-mongodb-scripts:
+  stage: test
+  image: mongo:7.0
+  services:
+    - mongo:7.0
+  variables:
+    MONGO_INITDB_ROOT_USERNAME: admin
+    MONGO_INITDB_ROOT_PASSWORD: password123
+  before_script:
+    - apt-get update && apt-get install -y jq curl
+    - chmod +x mongodb-automation/monitoring/health-check.sh
+    - chmod +x mongodb-automation/security/user-management.sh
+  script:
+    # Test health check script
+    - sleep 10  # Wait for MongoDB to start
+    - ./mongodb-automation/monitoring/health-check.sh --host mongo --format json
+    # Test user management (dry run)
+    - ./mongodb-automation/security/user-management.sh create --username testuser --password test123 --roles read --dry-run
+  artifacts:
+    reports:
+      junit: test-results.xml
+    paths:
+      - test-results/
+    expire_in: 1 week
+  only:
+    changes:
+      - "mongodb-automation/**/*"
+      - ".gitlab-ci.yml"
+
+test-terraform-plan:
+  stage: test
+  image: hashicorp/terraform:1.6
+  before_script:
+    - cd $TF_ROOT
+    - terraform init
+  script:
+    - terraform plan -var-file="terraform.tfvars.example"
+  artifacts:
+    paths:
+      - $TF_ROOT/.terraform/
+    expire_in: 1 day
+  only:
+    changes:
+      - "atlas/**/*"
+      - ".gitlab-ci.yml"
+
+# Build Stage
+build-docker-images:
+  stage: build
+  image: docker:24.0.5
+  services:
+    - docker:24.0.5-dind
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - docker build -t $CI_REGISTRY_IMAGE/mongodb-tools:$CI_COMMIT_SHA -f docker/Dockerfile.tools .
+    - docker build -t $CI_REGISTRY_IMAGE/mongodb-backup:$CI_COMMIT_SHA -f docker/Dockerfile.backup .
+    - docker push $CI_REGISTRY_IMAGE/mongodb-tools:$CI_COMMIT_SHA
+    - docker push $CI_REGISTRY_IMAGE/mongodb-backup:$CI_COMMIT_SHA
+    - docker tag $CI_REGISTRY_IMAGE/mongodb-tools:$CI_COMMIT_SHA $CI_REGISTRY_IMAGE/mongodb-tools:latest
+    - docker tag $CI_REGISTRY_IMAGE/mongodb-backup:$CI_COMMIT_SHA $CI_REGISTRY_IMAGE/mongodb-backup:latest
+    - docker push $CI_REGISTRY_IMAGE/mongodb-tools:latest
+    - docker push $CI_REGISTRY_IMAGE/mongodb-backup:latest
+  only:
+    refs:
+      - main
+      - develop
+    changes:
+      - "docker/**/*"
+      - "mongodb-automation/**/*"
+
+# Development Deployment
+deploy-atlas-dev:
+  stage: deploy-dev
+  image: hashicorp/terraform:1.6
+  environment:
+    name: development
+    url: https://cloud.mongodb.com
+  before_script:
+    - cd $TF_ROOT
+    - terraform init
+  script:
+    - terraform workspace select dev || terraform workspace new dev
+    - terraform plan -var-file="environments/dev.tfvars" -out=dev.tfplan
+    - terraform apply -auto-approve dev.tfplan
+    - terraform output -json > ../dev-outputs.json
+  artifacts:
+    paths:
+      - dev-outputs.json
+    expire_in: 1 day
+  only:
+    refs:
+      - develop
+    changes:
+      - "atlas/**/*"
+  when: manual
+
+deploy-onprem-dev:
+  stage: deploy-dev
+  image: quay.io/ansible/ansible-runner:latest
+  environment:
+    name: development-onprem
+  before_script:
+    - pip install pymongo
+    - ansible-galaxy collection install community.mongodb
+  script:
+    - ansible-playbook -i inventory/dev mongodb-sharded-cluster.yml
+      --extra-vars "mongodb_version=$MONGODB_VERSION environment=development"
+  only:
+    refs:
+      - develop
+    changes:
+      - "*.yml"
+      - "roles/**/*"
+      - "inventory/**/*"
+  when: manual
+
+# Integration Testing
+test-integration-dev:
+  stage: test-integration
+  image: python:3.11
+  needs:
+    - deploy-atlas-dev
+  before_script:
+    - pip install pymongo pytest requests
+  script:
+    - python tests/integration/test_mongodb_atlas.py
+    - python tests/integration/test_backup_restore.py
+  artifacts:
+    reports:
+      junit: integration-test-results.xml
+    paths:
+      - integration-test-results/
+  only:
+    refs:
+      - develop
+
+# Staging Deployment
+deploy-atlas-staging:
+  stage: deploy-staging
+  image: hashicorp/terraform:1.6
+  environment:
+    name: staging
+    url: https://cloud.mongodb.com
+  before_script:
+    - cd $TF_ROOT
+    - terraform init
+  script:
+    - terraform workspace select staging || terraform workspace new staging
+    - terraform plan -var-file="environments/staging.tfvars" -out=staging.tfplan
+    - terraform apply -auto-approve staging.tfplan
+    - terraform output -json > ../staging-outputs.json
+  artifacts:
+    paths:
+      - staging-outputs.json
+    expire_in: 1 day
+  needs:
+    - test-integration-dev
+  only:
+    refs:
+      - main
+  when: manual
+
+# Production Deployment
+deploy-atlas-production:
+  stage: deploy-production
+  image: hashicorp/terraform:1.6
+  environment:
+    name: production
+    url: https://cloud.mongodb.com
+  before_script:
+    - cd $TF_ROOT
+    - terraform init
+  script:
+    - terraform workspace select prod || terraform workspace new prod
+    - terraform plan -var-file="environments/prod.tfvars" -out=prod.tfplan
+    # Require manual approval for production
+    - echo "Production deployment planned. Review and approve to continue."
+    - terraform apply -auto-approve prod.tfplan
+    - terraform output -json > ../prod-outputs.json
+  artifacts:
+    paths:
+      - prod-outputs.json
+    expire_in: 30 days
+  needs:
+    - deploy-atlas-staging
+  only:
+    refs:
+      - main
+  when: manual
+  allow_failure: false
+
+deploy-onprem-production:
+  stage: deploy-production
+  image: quay.io/ansible/ansible-runner:latest
+  environment:
+    name: production-onprem
+  before_script:
+    - pip install pymongo
+    - ansible-galaxy collection install community.mongodb
+  script:
+    - ansible-playbook -i inventory/prod mongodb-sharded-cluster.yml
+      --extra-vars "mongodb_version=$MONGODB_VERSION environment=production"
+      --check --diff
+    - read -p "Continue with production deployment? (yes/no): " confirm
+    - if [ "$confirm" = "yes" ]; then
+        ansible-playbook -i inventory/prod mongodb-sharded-cluster.yml
+          --extra-vars "mongodb_version=$MONGODB_VERSION environment=production";
+      fi
+  only:
+    refs:
+      - main
+  when: manual
+
+# Monitoring Jobs
+monitor-health:
+  stage: monitor
+  image: $CI_REGISTRY_IMAGE/mongodb-tools:latest
+  script:
+    - ./mongodb-automation/monitoring/health-check.sh
+      --host $MONGODB_HOST
+      --username $MONGODB_USER
+      --password $MONGODB_PASSWORD
+      --format json
+      --slack-webhook $SLACK_WEBHOOK
+  artifacts:
+    reports:
+      junit: health-check-results.xml
+    paths:
+      - health-metrics.json
+  only:
+    variables:
+      - $CI_PIPELINE_SOURCE == "schedule"
+  environment:
+    name: production
+
+performance-monitor:
+  stage: monitor
+  image: $CI_REGISTRY_IMAGE/mongodb-tools:latest
+  script:
+    - ./mongodb-automation/monitoring/health-check.sh
+      --check performance
+      --format json
+      --email $ALERT_EMAIL
+  artifacts:
+    paths:
+      - performance-metrics.json
+    expire_in: 7 days
+  only:
+    variables:
+      - $CI_PIPELINE_SOURCE == "schedule"
+
+# Backup Jobs
+backup-production:
+  stage: backup
+  image: $CI_REGISTRY_IMAGE/mongodb-backup:latest
+  script:
+    - ./mongodb-automation/backup/backup-mongodb.sh
+      --host $MONGODB_PROD_HOST
+      --username $MONGODB_BACKUP_USER
+      --password $MONGODB_BACKUP_PASSWORD
+      --s3-bucket $BACKUP_S3_BUCKET
+      --encrypt-key $ENCRYPTION_KEY_FILE
+      --email $BACKUP_ALERT_EMAIL
+  artifacts:
+    paths:
+      - backup-logs/
+    expire_in: 30 days
+  only:
+    variables:
+      - $CI_PIPELINE_SOURCE == "schedule"
+  environment:
+    name: production
+
+backup-staging:
+  stage: backup
+  image: $CI_REGISTRY_IMAGE/mongodb-backup:latest
+  script:
+    - ./mongodb-automation/backup/backup-mongodb.sh
+      --host $MONGODB_STAGING_HOST
+      --s3-bucket $STAGING_BACKUP_S3_BUCKET
+      --retention 7
+  only:
+    variables:
+      - $CI_PIPELINE_SOURCE == "schedule"
+  environment:
+    name: staging
+
+# Cleanup old resources
+cleanup-old-backups:
+  stage: backup
+  image: amazon/aws-cli:latest
+  script:
+    - aws s3api list-objects --bucket $BACKUP_S3_BUCKET 
+      --query "Contents[?LastModified<'$(date -d '30 days ago' --iso-8601)'].Key" 
+      --output text | xargs -I {} aws s3 rm s3://$BACKUP_S3_BUCKET/{}
+  only:
+    variables:
+      - $CI_PIPELINE_SOURCE == "schedule"
+  when: manual
+
+# Rollback jobs
+rollback-production:
+  stage: deploy-production
+  image: hashicorp/terraform:1.6
+  environment:
+    name: production
+  before_script:
+    - cd $TF_ROOT
+    - terraform init
+  script:
+    - terraform workspace select prod
+    - terraform plan -destroy -var-file="environments/prod.tfvars" -out=destroy.tfplan
+    - terraform apply -auto-approve destroy.tfplan
+  when: manual
+  only:
+    refs:
+      - main
+
+# Security updates
+update-security-patches:
+  stage: deploy-production
+  image: quay.io/ansible/ansible-runner:latest
+  script:
+    - ansible-playbook -i inventory/prod security-updates.yml
+  only:
+    variables:
+      - $CI_PIPELINE_SOURCE == "schedule"
+  when: manual
+
+# Database maintenance
+database-maintenance:
+  stage: backup
+  image: $CI_REGISTRY_IMAGE/mongodb-tools:latest
+  script:
+    - ./mongodb-automation/maintenance/cleanup-logs.sh --days 30
+    - ./mongodb-automation/maintenance/index-maintenance.sh
+  only:
+    variables:
+      - $CI_PIPELINE_SOURCE == "schedule"
+  environment:
+    name: production
+
+# Disaster recovery test
+disaster-recovery-test:
+  stage: test
+  image: $CI_REGISTRY_IMAGE/mongodb-backup:latest
+  script:
+    - ./mongodb-automation/backup/restore-mongodb.sh
+      --backup-file $LATEST_BACKUP_FILE
+      --test-restore
+      --cleanup
+  only:
+    variables:
+      - $CI_PIPELINE_SOURCE == "schedule"
+  when: manual

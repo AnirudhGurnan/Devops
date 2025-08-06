@@ -1,0 +1,26 @@
+---
+- name: restart mongod
+  systemd:
+    name: mongod
+    state: restarted
+    daemon_reload: yes
+  listen: "restart mongod"
+
+- name: restart mongos
+  systemd:
+    name: mongos
+    state: restarted
+    daemon_reload: yes
+  listen: "restart mongos"
+
+- name: reload mongod
+  systemd:
+    name: mongod
+    state: reloaded
+  listen: "reload mongod"
+
+- name: reload mongos
+  systemd:
+    name: mongos
+    state: reloaded
+  listen: "reload mongos"

@@ -1,0 +1,21 @@
+---
+plugin: amazon.aws.aws_ec2
+regions:
+  - us-west-2
+filters:
+  tag:Cluster: mongodb-prod-cluster
+  instance-state-name: running
+keyed_groups:
+  # Group by instance role
+  - key: tags.Role
+    prefix: ""
+    separator: ""
+  # Group by availability zone
+  - key: placement.availability_zone
+    prefix: az
+compose:
+  ansible_host: public_ip_address
+  mongodb_role: tags.Role
+  mongodb_port: tags.Port | default('27017')
+  replica_set_name: tags.ReplicaSet | default('')
+  shard_name: tags.ShardName | default('')

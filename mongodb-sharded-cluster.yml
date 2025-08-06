@@ -1,0 +1,104 @@
+---
+- name: Deploy MongoDB Sharded Cluster on AWS
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - vars/mongodb-cluster.yml
+  tasks:
+    - name: Create EC2 instances for MongoDB cluster
+      amazon.aws.ec2_instance:
+        name: "{{ item.name }}"
+        image_id: "{{ aws_ami_id }}"
+        instance_type: "{{ item.instance_type }}"
+        key_name: "{{ aws_key_name }}"
+        security_groups: "{{ aws_security_groups }}"
+        subnet_id: "{{ item.subnet_id }}"
+        vpc_id: "{{ aws_vpc_id }}"
+        region: "{{ aws_region }}"
+        tags:
+          Environment: "{{ environment }}"
+          Role: "{{ item.role }}"
+          Cluster: "{{ mongodb_cluster_name }}"
+        state: present
+        wait: true
+        wait_timeout: 300
+      loop: "{{ mongodb_instances }}"
+      register: ec2_instances
+
+    - name: Add instances to inventory
+      add_host:
+        name: "{{ item.instances[0].public_ip_address }}"
+        groups: "{{ item.item.role }}"
+        ansible_user: "{{ aws_ansible_user }}"
+        ansible_ssh_private_key_file: "{{ aws_private_key_path }}"
+        mongodb_role: "{{ item.item.role }}"
+        mongodb_port: "{{ item.item.port }}"
+        replica_set_name: "{{ item.item.replica_set | default('') }}"
+        shard_name: "{{ item.item.shard_name | default('') }}"
+      loop: "{{ ec2_instances.results }}"
+
+    - name: Wait for SSH to be available
+      wait_for:
+        host: "{{ item.instances[0].public_ip_address }}"
+        port: 22
+        delay: 10
+        timeout: 300
+        state: started
+      loop: "{{ ec2_instances.results }}"
+
+- name: Configure MongoDB Config Servers
+  hosts: config_servers
+  become: yes
+  roles:
+    - mongodb
+  vars:
+    mongodb_config_type: "configsvr"
+    mongodb_replica_set: "{{ mongodb_config_replica_set }}"
+
+- name: Configure MongoDB Shard Servers
+  hosts: shard_servers
+  become: yes
+  roles:
+    - mongodb
+  vars:
+    mongodb_config_type: "shardsvr"
+
+- name: Configure MongoDB Router (mongos)
+  hosts: mongos_routers
+  become: yes
+  roles:
+    - mongodb
+  vars:
+    mongodb_config_type: "mongos"
+
+- name: Initialize MongoDB Cluster
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - vars/mongodb-cluster.yml
+  tasks:
+    - name: Initialize config server replica set
+      mongodb_replicaset:
+        login_host: "{{ groups['config_servers'][0] }}"
+        login_port: "{{ mongodb_config_port }}"
+        replica_set: "{{ mongodb_config_replica_set }}"
+        members: "{{ groups['config_servers'] | map('regex_replace', '^(.*)$', '\\1:' + mongodb_config_port|string) | list }}"
+      run_once: true
+
+    - name: Initialize shard replica sets
+      mongodb_replicaset:
+        login_host: "{{ groups[item][0] }}"
+        login_port: "{{ mongodb_shard_port }}"
+        replica_set: "{{ hostvars[groups[item][0]]['replica_set_name'] }}"
+        members: "{{ groups[item] | map('regex_replace', '^(.*)$', '\\1:' + mongodb_shard_port|string) | list }}"
+      loop: "{{ groups | select('match', 'shard.*_servers') | list }}"
+      run_once: true
+
+    - name: Add shards to cluster
+      mongodb_shard:
+        login_host: "{{ groups['mongos_routers'][0] }}"
+        login_port: "{{ mongodb_mongos_port }}"
+        shard: "{{ hostvars[groups[item][0]]['replica_set_name'] }}/{{ groups[item] | map('regex_replace', '^(.*)$', '\\1:' + mongodb_shard_port|string) | join(',') }}"
+        state: present
+      loop: "{{ groups | select('match', 'shard.*_servers') | list }}"
+      run_once: true

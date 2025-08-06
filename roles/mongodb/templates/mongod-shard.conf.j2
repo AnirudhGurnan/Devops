@@ -1,0 +1,41 @@
+# MongoDB Configuration File for Shard Server
+# {{ ansible_managed }}
+
+storage:
+  dbPath: {{ mongodb_datadir }}
+  journal:
+    enabled: true
+  wiredTiger:
+    engineConfig:
+      cacheSizeGB: 2
+
+systemLog:
+  destination: file
+  logAppend: true
+  path: {{ mongodb_logdir }}/mongod.log
+  logRotate: rename
+
+net:
+  port: {{ mongodb_shard_port }}
+  bindIp: 0.0.0.0
+  maxIncomingConnections: 65536
+
+processManagement:
+  fork: true
+  pidFilePath: /var/run/mongodb/mongod.pid
+
+security:
+{% if mongodb_keyfile_content is defined %}
+  keyFile: /etc/mongodb/keyfile
+  authorization: enabled
+{% endif %}
+
+sharding:
+  clusterRole: shardsvr
+
+replication:
+  replSetName: {{ replica_set_name }}
+
+# Set parameter for shard server
+setParameter:
+  enableLocalhostAuthBypass: false

@@ -1,0 +1,111 @@
+# AWS Configuration
+aws_region: "us-west-2"
+aws_ami_id: "ami-0c02fb55956c7d316"  # Amazon Linux 2 AMI
+aws_key_name: "your-ec2-key-pair"
+aws_security_groups: ["mongodb-cluster-sg"]
+aws_vpc_id: "vpc-xxxxxxxxx"
+aws_ansible_user: "ec2-user"
+aws_private_key_path: "~/.ssh/your-private-key.pem"
+
+# Environment
+environment: "production"
+mongodb_cluster_name: "mongodb-prod-cluster"
+
+# MongoDB Configuration
+mongodb_version: "7.0"
+mongodb_config_port: 27019
+mongodb_shard_port: 27018
+mongodb_mongos_port: 27017
+mongodb_config_replica_set: "configReplSet"
+
+# Instance Configuration
+mongodb_instances:
+  # Config Servers (3 instances for high availability)
+  - name: "mongodb-config-1"
+    role: "config_servers"
+    instance_type: "t3.medium"
+    subnet_id: "subnet-xxxxxxxxx"
+    port: 27019
+    replica_set: "configReplSet"
+  - name: "mongodb-config-2"
+    role: "config_servers"
+    instance_type: "t3.medium"
+    subnet_id: "subnet-yyyyyyyyy"
+    port: 27019
+    replica_set: "configReplSet"
+  - name: "mongodb-config-3"
+    role: "config_servers"
+    instance_type: "t3.medium"
+    subnet_id: "subnet-zzzzzzzzz"
+    port: 27019
+    replica_set: "configReplSet"
+
+  # Shard 1 Servers (3 instances for replica set)
+  - name: "mongodb-shard1-1"
+    role: "shard1_servers"
+    instance_type: "t3.large"
+    subnet_id: "subnet-xxxxxxxxx"
+    port: 27018
+    replica_set: "shard1ReplSet"
+    shard_name: "shard1"
+  - name: "mongodb-shard1-2"
+    role: "shard1_servers"
+    instance_type: "t3.large"
+    subnet_id: "subnet-yyyyyyyyy"
+    port: 27018
+    replica_set: "shard1ReplSet"
+    shard_name: "shard1"
+  - name: "mongodb-shard1-3"
+    role: "shard1_servers"
+    instance_type: "t3.large"
+    subnet_id: "subnet-zzzzzzzzz"
+    port: 27018
+    replica_set: "shard1ReplSet"
+    shard_name: "shard1"
+
+  # Shard 2 Servers (3 instances for replica set)
+  - name: "mongodb-shard2-1"
+    role: "shard2_servers"
+    instance_type: "t3.large"
+    subnet_id: "subnet-xxxxxxxxx"
+    port: 27018
+    replica_set: "shard2ReplSet"
+    shard_name: "shard2"
+  - name: "mongodb-shard2-2"
+    role: "shard2_servers"
+    instance_type: "t3.large"
+    subnet_id: "subnet-yyyyyyyyy"
+    port: 27018
+    replica_set: "shard2ReplSet"
+    shard_name: "shard2"
+  - name: "mongodb-shard2-3"
+    role: "shard2_servers"
+    instance_type: "t3.large"
+    subnet_id: "subnet-zzzzzzzzz"
+    port: 27018
+    replica_set: "shard2ReplSet"
+    shard_name: "shard2"
+
+  # Mongos Routers (2 instances for high availability)
+  - name: "mongodb-mongos-1"
+    role: "mongos_routers"
+    instance_type: "t3.medium"
+    subnet_id: "subnet-xxxxxxxxx"
+    port: 27017
+  - name: "mongodb-mongos-2"
+    role: "mongos_routers"
+    instance_type: "t3.medium"
+    subnet_id: "subnet-yyyyyyyyy"
+    port: 27017
+
+# MongoDB Database Configuration
+mongodb_datadir: "/var/lib/mongodb"
+mongodb_logdir: "/var/log/mongodb"
+mongodb_user: "mongod"
+mongodb_group: "mongod"
+
+# Security Configuration
+mongodb_keyfile_content: |
+  # Generate a random key using: openssl rand -base64 756
+  # Replace this with your actual keyfile content
+  YOUR_MONGODB_KEYFILE_CONTENT_HERE
