@@ -1,0 +1,88 @@
+# MongoDB Backup Tools Docker Image
+FROM ubuntu:22.04
+
+# Metadata
+LABEL maintainer="devops-team@company.com"
+LABEL description="MongoDB backup and restore tools for CI/CD pipelines"
+LABEL version="1.0"
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV MONGODB_TOOLS_VERSION=100.9.0
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    gnupg \
+    jq \
+    gzip \
+    tar \
+    openssl \
+    gpg \
+    python3 \
+    python3-pip \
+    awscli \
+    cron \
+    logrotate \
+    rsync \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install MongoDB tools
+RUN wget -qO - https://www.mongodb.org/static/pgp/server-7.0.asc | apt-key add - \
+    && echo "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | tee /etc/apt/sources.list.d/mongodb-org-7.0.list \
+    && apt-get update \
+    && apt-get install -y mongodb-org-tools mongodb-mongosh \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies for backup operations
+RUN pip3 install \
+    pymongo \
+    boto3 \
+    requests \
+    schedule \
+    cryptography \
+    pyyaml
+
+# Create working directory
+WORKDIR /app
+
+# Copy backup scripts
+COPY mongodb-automation/backup/ /app/backup/
+COPY mongodb-automation/monitoring/ /app/monitoring/
+
+# Make scripts executable
+RUN find /app -name "*.sh" -type f -exec chmod +x {} \;
+
+# Create directories for backups and logs
+RUN mkdir -p \
+    /var/backups/mongodb \
+    /var/log/mongodb \
+    /tmp/mongodb \
+    /app/config
+
+# Create backup user
+RUN useradd -m -s /bin/bash backup-user \
+    && chown -R backup-user:backup-user /var/backups/mongodb /var/log/mongodb
+
+# Copy backup scheduler script
+COPY docker/backup-scheduler.py /app/backup-scheduler.py
+RUN chmod +x /app/backup-scheduler.py
+
+# Set up cron for automated backups
+COPY docker/backup-crontab /etc/cron.d/mongodb-backup
+RUN chmod 0644 /etc/cron.d/mongodb-backup \
+    && crontab /etc/cron.d/mongodb-backup
+
+# Switch to backup user
+USER backup-user
+
+# Health check for backup service
+HEALTHCHECK --interval=300s --timeout=30s --start-period=10s --retries=3 \
+    CMD /app/backup/backup-mongodb.sh --help > /dev/null || exit 1
+
+# Volume for backup storage
+VOLUME ["/var/backups/mongodb", "/var/log/mongodb"]
+
+# Default command runs the backup scheduler
+CMD ["python3", "/app/backup-scheduler.py"]
