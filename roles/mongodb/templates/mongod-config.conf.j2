@@ -1,0 +1,41 @@
+# MongoDB Configuration File for Config Server
+# {{ ansible_managed }}
+
+storage:
+  dbPath: {{ mongodb_datadir }}
+  journal:
+    enabled: true
+  wiredTiger:
+    engineConfig:
+      cacheSizeGB: 1
+
+systemLog:
+  destination: file
+  logAppend: true
+  path: {{ mongodb_logdir }}/mongod.log
+  logRotate: rename
+
+net:
+  port: {{ mongodb_config_port }}
+  bindIp: 0.0.0.0
+  maxIncomingConnections: 65536
+
+processManagement:
+  fork: true
+  pidFilePath: /var/run/mongodb/mongod.pid
+
+security:
+{% if mongodb_keyfile_content is defined %}
+  keyFile: /etc/mongodb/keyfile
+  authorization: enabled
+{% endif %}
+
+sharding:
+  clusterRole: configsvr
+
+replication:
+  replSetName: {{ mongodb_replica_set }}
+
+# Set parameter for config server
+setParameter:
+  enableLocalhostAuthBypass: false

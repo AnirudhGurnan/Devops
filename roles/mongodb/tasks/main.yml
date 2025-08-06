@@ -1,0 +1,112 @@
+---
+- name: Include OS-specific variables
+  include_vars: "{{ ansible_os_family }}.yml"
+
+- name: Create MongoDB user
+  user:
+    name: "{{ mongodb_user }}"
+    group: "{{ mongodb_group }}"
+    system: yes
+    shell: /bin/false
+    home: "{{ mongodb_datadir }}"
+    createhome: no
+
+- name: Create MongoDB group
+  group:
+    name: "{{ mongodb_group }}"
+    system: yes
+
+- name: Add MongoDB repository
+  yum_repository:
+    name: mongodb-org-7.0
+    description: MongoDB Repository
+    baseurl: https://repo.mongodb.org/yum/amazon/2/mongodb-org/7.0/x86_64/
+    gpgkey: https://www.mongodb.org/static/pgp/server-7.0.asc
+    gpgcheck: yes
+    enabled: yes
+  when: ansible_os_family == "RedHat"
+
+- name: Install MongoDB packages
+  package:
+    name:
+      - mongodb-org
+      - mongodb-org-server
+      - mongodb-org-shell
+      - mongodb-org-mongos
+      - mongodb-org-tools
+    state: present
+
+- name: Create MongoDB directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ mongodb_user }}"
+    group: "{{ mongodb_group }}"
+    mode: '0755'
+  loop:
+    - "{{ mongodb_datadir }}"
+    - "{{ mongodb_logdir }}"
+    - /etc/mongodb
+    - /var/run/mongodb
+
+- name: Create MongoDB keyfile
+  copy:
+    content: "{{ mongodb_keyfile_content }}"
+    dest: /etc/mongodb/keyfile
+    owner: "{{ mongodb_user }}"
+    group: "{{ mongodb_group }}"
+    mode: '0400'
+  when: mongodb_keyfile_content is defined
+
+- name: Configure MongoDB for Config Server
+  template:
+    src: mongod-config.conf.j2
+    dest: /etc/mongod.conf
+    owner: root
+    group: root
+    mode: '0644'
+  when: mongodb_config_type == "configsvr"
+  notify: restart mongod
+
+- name: Configure MongoDB for Shard Server
+  template:
+    src: mongod-shard.conf.j2
+    dest: /etc/mongod.conf
+    owner: root
+    group: root
+    mode: '0644'
+  when: mongodb_config_type == "shardsvr"
+  notify: restart mongod
+
+- name: Configure MongoDB for Mongos Router
+  template:
+    src: mongos.conf.j2
+    dest: /etc/mongos.conf
+    owner: root
+    group: root
+    mode: '0644'
+  when: mongodb_config_type == "mongos"
+  notify: restart mongos
+
+- name: Start and enable mongod service
+  systemd:
+    name: mongod
+    state: started
+    enabled: yes
+    daemon_reload: yes
+  when: mongodb_config_type in ["configsvr", "shardsvr"]
+
+- name: Start and enable mongos service
+  systemd:
+    name: mongos
+    state: started
+    enabled: yes
+    daemon_reload: yes
+  when: mongodb_config_type == "mongos"
+
+- name: Wait for MongoDB to start
+  wait_for:
+    port: "{{ mongodb_port }}"
+    host: "{{ ansible_default_ipv4.address }}"
+    delay: 10
+    timeout: 60

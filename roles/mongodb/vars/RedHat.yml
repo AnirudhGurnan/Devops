@@ -1,0 +1,6 @@
+---
+# RedHat family specific variables
+mongodb_package_name: mongodb-org
+mongodb_service_name: mongod
+mongodb_config_path: /etc/mongod.conf
+mongodb_pid_path: /var/run/mongodb/mongod.pid
